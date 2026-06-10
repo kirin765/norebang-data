@@ -5,7 +5,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fetchRetry, sleep, normalize, parseKyPage } from './lib.mjs';
 
-const DELAY_MS = 700;
+const DELAY_MS = 150; // kysing 서버 응답이 3~5초로 느려 페이지 동시 요청이 필요
+const CONC = 5;
 const PROGRESS = 'data/ky-progress.json';
 const OUT = 'data/ky.json';
 
@@ -63,27 +64,43 @@ console.log(`coverset: ${coverset.length} queries, ${done.size} already done, ${
 let consecutiveEmpty = 0;
 for (const q of coverset) {
   if (done.has(q)) continue;
-  let page = 1, maxPage = 1, added = 0;
+  let added = 0;
+  const collect = (rows) => {
+    for (const s of rows) {
+      if (!songs[s.no]) { songs[s.no] = s; added++; }
+    }
+  };
+  let first;
+  try {
+    first = await searchPage(q, 1);
+  } catch (e) {
+    console.log(`FAIL ${q} p1: ${e.message} — checkpointing and aborting`);
+    save();
+    process.exit(1);
+  }
+  collect(first.rows);
+  consecutiveEmpty = first.rows.length === 0 ? consecutiveEmpty + 1 : 0;
+  let maxPage = first.maxPage;
+  let page = 2;
   while (page <= maxPage) {
-    let parsed;
+    const batch = [];
+    for (let i = 0; i < CONC && page <= maxPage; i++, page++) batch.push(searchPage(q, page));
+    let results;
     try {
-      parsed = await searchPage(q, page);
+      results = await Promise.all(batch);
     } catch (e) {
-      console.log(`FAIL ${q} p${page}: ${e.message} — checkpointing and aborting`);
+      console.log(`FAIL ${q} ~p${page}: ${e.message} — checkpointing and aborting`);
       save();
       process.exit(1);
     }
-    maxPage = Math.max(maxPage, parsed.maxPage);
-    if (page === 1) consecutiveEmpty = parsed.rows.length === 0 ? consecutiveEmpty + 1 : 0;
-    for (const s of parsed.rows) {
-      if (!songs[s.no]) { songs[s.no] = s; added++; }
+    for (const r of results) {
+      collect(r.rows);
+      maxPage = Math.max(maxPage, r.maxPage);
     }
-    page++;
     await sleep(DELAY_MS);
   }
   done.add(q);
-  progress.doneQueries = [...done];
-  if (done.size % 5 === 0) save();
+  save();
   console.log(`[${done.size}/${coverset.length}] "${q}" pages=${maxPage} new=${added} total=${Object.keys(songs).length}`);
   if (consecutiveEmpty >= 10) {
     console.log('10 consecutive empty queries — possible block, aborting');
