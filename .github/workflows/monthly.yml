@@ -1,0 +1,33 @@
+name: monthly-catalog-update
+
+on:
+  schedule:
+    - cron: "0 3 3 * *" # 매달 3일 12:00 KST
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Scrape TJ (full) + KY (incremental)
+        working-directory: scraper
+        run: |
+          node tj.mjs 190001
+          node ky-latest.mjs
+          node build-db.mjs
+      - name: Publish artifacts
+        run: |
+          cp scraper/dist/songs.db.gz songs.db.gz
+          cp scraper/dist/version.json version.json
+          git config user.name "norebang-bot"
+          git config user.email "actions@github.com"
+          git add songs.db.gz version.json scraper/data/tj.json scraper/data/ky.json
+          git diff --cached --quiet || git commit -m "data: monthly catalog update $(date -u +%Y-%m-%d)"
+          git push
