@@ -3,7 +3,7 @@
 // plus a-z and 0-9. Progress is checkpointed to data/ky-progress.json so the
 // crawl can resume after interruption. Output: data/ky.json
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { fetchRetry, sleep, normalize } from './lib.mjs';
+import { fetchRetry, sleep, normalize, parseKyPage } from './lib.mjs';
 
 const DELAY_MS = 700;
 const PROGRESS = 'data/ky-progress.json';
@@ -43,37 +43,10 @@ function buildCoverset() {
   return [...chosen, ...latin];
 }
 
-function parsePage(html) {
-  // each result row is a ul.search_chart_list; first one is the header
-  const rows = [];
-  const blocks = html.split('search_chart_list').slice(2); // skip pre-header + header
-  for (const b of blocks) {
-    const num = b.match(/search_chart_num[^>]*>\s*([0-9]+)\s*</)?.[1];
-    const tit = b.match(/search_chart_tit[^>]*>[\s\S]*?<span class="tit"[^>]*>([\s\S]*?)<\/span>/)?.[1];
-    const sng = b.match(/search_chart_sng[^"]*"\s*title="([^"]*)"/)?.[1];
-    if (num && tit) {
-      rows.push({
-        no: Number(num),
-        title: decodeEntities(tit.replace(/<[^>]+>/g, '').trim()),
-        artist: decodeEntities((sng || '').trim()),
-      });
-    }
-  }
-  const pages = [...html.matchAll(/s_page=(\d+)/g)].map((m) => Number(m[1]));
-  return { rows, maxPage: pages.length ? Math.max(...pages) : 1 };
-}
-
-function decodeEntities(s) {
-  return s
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)));
-}
-
 async function searchPage(keyword, page) {
   const url = `https://kysing.kr/search/?category=2&keyword=${encodeURIComponent(keyword)}&s_page=${page}`;
   const res = await fetchRetry(url);
-  return parsePage(await res.text());
+  return parseKyPage(await res.text());
 }
 
 // --- main ---
@@ -101,8 +74,7 @@ for (const q of coverset) {
       process.exit(1);
     }
     maxPage = Math.max(maxPage, parsed.maxPage);
-    if (parsed.rows.length === 0 && page === 1) consecutiveEmpty++;
-    else consecutiveEmpty = 0;
+    if (page === 1) consecutiveEmpty = parsed.rows.length === 0 ? consecutiveEmpty + 1 : 0;
     for (const s of parsed.rows) {
       if (!songs[s.no]) { songs[s.no] = s; added++; }
     }
